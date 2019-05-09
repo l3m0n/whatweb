@@ -1,20 +1,20 @@
-package whatweb
+package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/prometheus/common/log"
 	"io/ioutil"
 	"regexp"
 	"strconv"
 	"strings"
+	// "github.com/prometheus/common/log"
 )
 
 /*
 对 https://github.com/unstppbl/gowap/blob/master/gowap.go 进行修改
 
-传入以下数据即可进行分析
+传入以下数据即可进行分析, 已经被改为内存加载具体数据
 
 ( url, 响应头[list], 网页内容, js返回内容 )
 
@@ -23,10 +23,10 @@ TODO:
 */
 
 type HttpData struct {
-	Url		string
-	Headers	map[string][]string
-	Html	string
-	Jsret	string
+	Url     string
+	Headers map[string][]string
+	Html    string
+	Jsret   string
 }
 
 type analyzeData struct {
@@ -64,10 +64,33 @@ type category struct {
 
 // Wappalyzer implements analyze method as original wappalyzer does
 type Wappalyzer struct {
-	HttpData  *HttpData
+	HttpData   *HttpData
 	Apps       map[string]*application
 	Categories map[string]*category
 	JSON       bool
+}
+
+var cache = make(map[string]map[string]map[string][]*pattern)
+
+func getPatterns(app *application, typ string) map[string][]*pattern {
+	return cache[app.Name][typ]
+}
+
+func initPatterns(app *application) {
+	c := map[string]map[string][]*pattern{"url": parsePatterns0(app.URL)}
+	if app.HTML != nil {
+		c["html"] = parsePatterns0(app.HTML)
+	}
+	if app.Headers != nil {
+		c["headers"] = parsePatterns0(app.Headers)
+	}
+	if app.Cookies != nil {
+		c["cookies"] = parsePatterns0(app.Cookies)
+	}
+	if app.Scripts != nil {
+		c["scripts"] = parsePatterns0(app.Scripts)
+	}
+	cache[app.Name] = c
 }
 
 // Init
@@ -78,14 +101,14 @@ func Init(appsJSONPath string, JSON bool) (wapp *Wappalyzer, err error) {
 	//}
 	appsFile, err := ioutil.ReadFile(appsJSONPath)
 	if err != nil {
-		log.Errorf("Couldn't open file at %s\n", appsJSONPath)
+		// log.Errorf("Couldn't open file at %s\n", appsJSONPath)
 		return nil, err
 	}
 
 	temporary := &temp{}
 	err = json.Unmarshal(appsFile, &temporary)
 	if err != nil {
-		log.Errorf("Couldn't unmarshal apps.json file: %s\n", err)
+		// log.Errorf("Couldn't unmarshal apps.json file: %s\n", err)
 		return nil, err
 	}
 
@@ -95,7 +118,7 @@ func Init(appsJSONPath string, JSON bool) (wapp *Wappalyzer, err error) {
 	for k, v := range temporary.Categories {
 		catg := &category{}
 		if err = json.Unmarshal(*v, catg); err != nil {
-			log.Errorf("[!] Couldn't unmarshal Categories: %s\n", err)
+			// log.Errorf("[!] Couldn't unmarshal Categories: %s\n", err)
 			return nil, err
 		}
 		wapp.Categories[k] = catg
@@ -105,10 +128,11 @@ func Init(appsJSONPath string, JSON bool) (wapp *Wappalyzer, err error) {
 		app := &application{}
 		app.Name = k
 		if err = json.Unmarshal(*v, app); err != nil {
-			log.Errorf("Couldn't unmarshal Apps: %s\n", err)
+			// log.Errorf("Couldn't unmarshal Apps: %s\n", err)
 			return nil, err
 		}
 		parseCategories(app, &wapp.Categories)
+		initPatterns(app)
 		wapp.Apps[k] = app
 	}
 	wapp.JSON = JSON
@@ -124,17 +148,17 @@ type resultApp struct {
 	implies    interface{}
 }
 
-func (wapp *Wappalyzer) ConvHeader(headers string) (map[string][]string) {
+func (wapp *Wappalyzer) ConvHeader(headers string) map[string][]string {
 	head := make(map[string][]string)
 
 	tmp := strings.Split(strings.TrimRight(headers, "\n"), "\n")
 	for _, v := range tmp {
-		if strings.HasPrefix(strings.ToLower(v), "http/1.") {
+		if strings.HasPrefix(strings.ToLower(v), "http/") {
 			continue
 		}
 		splitStr := strings.Split(v, ":")
 		header_key := strings.ToLower(strings.Replace(splitStr[0], "_", "-", -1))
-		header_val := strings.TrimSpace(strings.Join(splitStr[1:],""))
+		header_val := strings.TrimSpace(strings.Join(splitStr[1:], ""))
 
 		head[header_key] = append(head[header_key], header_val)
 	}
@@ -149,7 +173,7 @@ func (wapp *Wappalyzer) Analyze(httpdata *HttpData) (result interface{}, err err
 	// analyze html script src
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(httpdata.Html))
 	if err != nil {
-		log.Fatal(err)
+		// log.Fatal(err)
 	}
 
 	doc.Find("script").Each(func(i int, s *goquery.Selection) {
@@ -163,7 +187,7 @@ func (wapp *Wappalyzer) Analyze(httpdata *HttpData) (result interface{}, err err
 		analyze headers cookie
 
 		two set-cookie?
-	 */
+	*/
 	analyzeData.cookies = make(map[string]string)
 	for _, cookie := range httpdata.Headers["set-cookie"] {
 		keyValues := strings.Split(cookie, ";")
@@ -175,7 +199,6 @@ func (wapp *Wappalyzer) Analyze(httpdata *HttpData) (result interface{}, err err
 			}
 		}
 	}
-
 	for _, app := range wapp.Apps {
 		analyzeURL(app, httpdata.Url, &detectedApplications)
 		if app.HTML != nil {
@@ -213,6 +236,9 @@ func (wapp *Wappalyzer) Analyze(httpdata *HttpData) (result interface{}, err err
 		}
 		return string(j), nil
 	}
+
+	//fmt.Println(res)
+	fmt.Println(httpdata.Url, res)
 
 	return res, nil
 }
@@ -261,7 +287,7 @@ type pattern struct {
 	confidence string
 }
 
-func parsePatterns(patterns interface{}) (result map[string][]*pattern) {
+func parsePatterns0(patterns interface{}) (result map[string][]*pattern) {
 	parsed := make(map[string][]string)
 	switch ptrn := patterns.(type) {
 	case string:
@@ -277,7 +303,7 @@ func parsePatterns(patterns interface{}) (result map[string][]*pattern) {
 		}
 		parsed["main"] = slice
 	default:
-		log.Errorf("Unkown type in parsePatterns: %T\n", ptrn)
+		// log.Errorf("Unkown type in parsePatterns: %T\n", ptrn)
 	}
 	result = make(map[string][]*pattern)
 	for k, v := range parsed {
@@ -314,7 +340,7 @@ func parsePatterns(patterns interface{}) (result map[string][]*pattern) {
 }
 
 func analyzeURL(app *application, url string, detectedApplications *map[string]*resultApp) {
-	patterns := parsePatterns(app.URL)
+	patterns := getPatterns(app, "url")
 	for _, v := range patterns {
 		for _, pattrn := range v {
 			if pattrn.regex != nil && pattrn.regex.Match([]byte(url)) {
@@ -361,7 +387,7 @@ func detectVersion(app *resultApp, pattrn *pattern, value *string) {
 	1. 如果regex为空的话, 就看headers名是否存在了
 */
 func analyzeHeaders(app *application, headers map[string][]string, detectedApplications *map[string]*resultApp) {
-	patterns := parsePatterns(app.Headers)
+	patterns := getPatterns(app, "headers")
 	for headerName, v := range patterns {
 		headerNameLowerCase := strings.ToLower(headerName)
 
@@ -372,7 +398,7 @@ func analyzeHeaders(app *application, headers map[string][]string, detectedAppli
 				continue
 			}
 
-			if ok && pattrn.regex  == nil {
+			if ok && pattrn.regex == nil {
 				resApp := &resultApp{app.Name, app.Version, app.Categories, app.Excludes, app.Implies}
 				(*detectedApplications)[resApp.Name] = resApp
 			}
@@ -393,9 +419,10 @@ func analyzeHeaders(app *application, headers map[string][]string, detectedAppli
 }
 
 func analyzeHTML(app *application, html string, detectedApplications *map[string]*resultApp) {
-	patterns := parsePatterns(app.HTML)
+	patterns := getPatterns(app, "html")
 	for _, v := range patterns {
 		for _, pattrn := range v {
+
 			if pattrn.regex != nil && pattrn.regex.Match([]byte(html)) {
 				if _, ok := (*detectedApplications)[app.Name]; !ok {
 					resApp := &resultApp{app.Name, app.Version, app.Categories, app.Excludes, app.Implies}
@@ -403,12 +430,13 @@ func analyzeHTML(app *application, html string, detectedApplications *map[string
 					detectVersion(resApp, pattrn, &html)
 				}
 			}
+
 		}
 	}
 }
 
 func analyzeScripts(app *application, scripts []string, detectedApplications *map[string]*resultApp) {
-	patterns := parsePatterns(app.Scripts)
+	patterns := getPatterns(app, "scripts")
 	for _, v := range patterns {
 		for _, pattrn := range v {
 			if pattrn.regex != nil {
@@ -431,19 +459,17 @@ func analyzeScripts(app *application, scripts []string, detectedApplications *ma
 	1. 如果regex为空的话, 就看session名是否存在了
 */
 func analyzeCookies(app *application, cookies map[string]string, detectedApplications *map[string]*resultApp) {
-	patterns := parsePatterns(app.Cookies)
+	patterns := getPatterns(app, "cookies")
 	for cookieName, v := range patterns {
 		cookieNameLowerCase := strings.ToLower(cookieName)
 		for _, pattrn := range v {
-			cookie, ok := cookies[cookieNameLowerCase];
+			cookie, ok := cookies[cookieNameLowerCase]
 
 			if !ok {
 				continue
 			}
 
-			//fmt.Println(cookie, cookieName, pattrn)
-
-			if ok && pattrn.regex  == nil {
+			if ok && pattrn.regex == nil {
 				if _, ok := (*detectedApplications)[app.Name]; !ok {
 					resApp := &resultApp{app.Name, app.Version, app.Categories, app.Excludes, app.Implies}
 					(*detectedApplications)[resApp.Name] = resApp
@@ -460,4 +486,3 @@ func analyzeCookies(app *application, cookies map[string]string, detectedApplica
 		}
 	}
 }
-
